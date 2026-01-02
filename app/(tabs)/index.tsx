@@ -1,17 +1,13 @@
 "use client";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import DateTimePicker, {
-  DateTimePickerEvent,
-} from "@react-native-community/datetimepicker";
-import React, { useEffect, useMemo, useState } from "react";
+import { useFocusEffect } from "expo-router";
+import React, { useCallback, useMemo, useState } from "react";
 import {
-  Alert,
   Modal,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -36,6 +32,12 @@ interface SleepTime {
   end: string;
 }
 
+interface HistoryItem {
+  taskId: string;
+  date: string;
+  completed: boolean;
+}
+
 /* ================= TIME HELPERS ================= */
 
 const toMin = (t?: string) => {
@@ -44,199 +46,105 @@ const toMin = (t?: string) => {
   return h * 60 + m;
 };
 
-const normalize = (s: number, e: number) => {
-  if (e <= s) e += 1440;
-  return { s, e };
-};
-
-const overlap = (aS: number, aE: number, bS: number, bE: number) => {
-  const A = normalize(aS, aE);
-  const B = normalize(bS, bE);
-  return Math.max(A.s, B.s) < Math.min(A.e, B.e);
-};
-
 const format12 = (t?: string) => {
   if (!t || !t.includes(":")) return "--:--";
-  const [hh, mm] = t.split(":");
-  const h = Number(hh);
-  const m = Number(mm);
-  if (Number.isNaN(h) || Number.isNaN(m)) return "--:--";
+  const [h, m] = t.split(":").map(Number);
   const ampm = h >= 12 ? "PM" : "AM";
   return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${ampm}`;
 };
 
-/* ================= MAIN ================= */
+/* ================= COMPONENT ================= */
 
 export default function ScheduleScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [sleep, setSleep] = useState<SleepTime>({ start: "", end: "" });
   const [now, setNow] = useState(new Date());
-
-  const [taskModal, setTaskModal] = useState(false);
   const [sleepModal, setSleepModal] = useState(false);
 
-  const [form, setForm] = useState({
-    id: "",
-    title: "",
-    start: "",
-    end: "",
-    days: [] as string[],
-  });
+  /* ===== LOAD DATA ===== */
 
-  const [picker, setPicker] = useState<
-    "start" | "end" | "sleepStart" | "sleepEnd" | null
-  >(null);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
 
-  /* ================= LOAD ================= */
+      const load = async () => {
+        const t = await AsyncStorage.getItem("tasks");
+        const s = await AsyncStorage.getItem("sleep");
 
-  useEffect(() => {
-    (async () => {
-      const t = await AsyncStorage.getItem("tasks");
-      const s = await AsyncStorage.getItem("sleep");
-      if (t) setTasks(JSON.parse(t));
-      if (s) setSleep(JSON.parse(s));
-      else setSleepModal(true);
-    })();
+        if (!active) return;
+        setTasks(t ? JSON.parse(t) : []);
+        setSleep(s ? JSON.parse(s) : { start: "", end: "" });
+      };
 
-    const i = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(i);
-  }, []);
-
-  const saveTasks = async (list: Task[]) => {
-    setTasks(list);
-    await AsyncStorage.setItem("tasks", JSON.stringify(list));
-  };
-
-  /* ================= TODAY FILTER ================= */
-
-  const todayName = DAYS[now.getDay()];
-
-  const todayTasks = useMemo(
-    () => tasks.filter((t) => t.days.includes(todayName)),
-    [tasks, todayName]
+      load();
+      return () => {
+        active = false;
+      };
+    }, [])
   );
 
-  /* ================= STATUS BADGE ================= */
+  /* ===== CLOCK ===== */
+
+  useFocusEffect(
+    useCallback(() => {
+      const i = setInterval(() => setNow(new Date()), 1000);
+      return () => clearInterval(i);
+    }, [])
+  );
+
+  /* ===== TODAY TASKS ===== */
+
+  const today = DAYS[now.getDay()];
+
+  const todayTasks = useMemo(
+    () => tasks.filter((t) => t.days.includes(today)),
+    [tasks, today]
+  );
+
+  /* ===== STATUS ===== */
 
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
   const statusOf = (t: Task) => {
     if (t.done) return "Done";
+
     const s = toMin(t.start);
-    const e = normalize(s, toMin(t.end)).e;
+    let e = toMin(t.end);
+    if (e <= s) e += 1440;
+
     if (nowMin < s) return "Next";
     if (nowMin > e) return "Previous";
     return "Current";
   };
 
-  /* ================= VALIDATION ================= */
+  /* ================= DONE HANDLER (CRITICAL FIX) ================= */
 
-  const validateTask = () => {
-    if (!form.title.trim()) {
-      Alert.alert("Task name required");
-      return false;
-    }
+  const toggleDone = async (task: Task) => {
+    const todayStr = new Date().toDateString();
 
-    if (tasks.some((t) => t.title === form.title && t.id !== form.id)) {
-      Alert.alert("Task name must be unique");
-      return false;
-    }
+    // 1️⃣ Update task state
+    const updatedTasks = tasks.map((t) =>
+      t.id === task.id ? { ...t, done: !t.done } : t
+    );
+    setTasks(updatedTasks);
+    await AsyncStorage.setItem("tasks", JSON.stringify(updatedTasks));
 
-    if (!form.start || !form.end) {
-      Alert.alert("Select start and end time");
-      return false;
-    }
+    // 2️⃣ Update history
+    const rawHistory = await AsyncStorage.getItem("taskHistory");
+    const history: HistoryItem[] = rawHistory ? JSON.parse(rawHistory) : [];
 
-    if (form.days.length === 0) {
-      Alert.alert("Select at least one day");
-      return false;
-    }
+    const filtered = history.filter(
+      (h) =>
+        !(h.taskId === task.id && new Date(h.date).toDateString() === todayStr)
+    );
 
-    const s = toMin(form.start);
-    const e = toMin(form.end);
+    filtered.push({
+      taskId: task.id,
+      date: new Date().toISOString(),
+      completed: !task.done,
+    });
 
-    if (s === e) {
-      Alert.alert("Invalid time range");
-      return false;
-    }
-
-    if (
-      sleep.start &&
-      sleep.end &&
-      overlap(s, e, toMin(sleep.start), toMin(sleep.end))
-    ) {
-      Alert.alert(
-        "Sleep conflict",
-        `${format12(sleep.start)} – ${format12(sleep.end)}`
-      );
-      return false;
-    }
-
-    for (const day of form.days) {
-      for (const t of tasks) {
-        if (
-          t.id !== form.id &&
-          t.days.includes(day) &&
-          overlap(s, e, toMin(t.start), toMin(t.end))
-        ) {
-          Alert.alert(
-            "Task conflict",
-            `Day: ${day}\n${t.title}\n${format12(t.start)} – ${format12(t.end)}`
-          );
-          return false;
-        }
-      }
-    }
-
-    return true;
-  };
-
-  const saveTask = async () => {
-    if (!validateTask()) return;
-
-    const updated =
-      form.id === ""
-        ? [
-            ...tasks,
-            {
-              id: Date.now().toString(),
-              title: form.title,
-              start: form.start,
-              end: form.end,
-              days: form.days,
-              done: false,
-            },
-          ]
-        : tasks.map((t) => (t.id === form.id ? { ...t, ...form } : t));
-
-    await saveTasks(updated);
-    closeTaskModal();
-  };
-
-  const closeTaskModal = () => {
-    setTaskModal(false);
-    setForm({ id: "", title: "", start: "", end: "", days: [] });
-  };
-
-  /* ================= TIME PICKER ================= */
-
-  const onTimeChange = (e: DateTimePickerEvent, d?: Date) => {
-    if (e.type !== "set" || !d) {
-      setPicker(null);
-      return;
-    }
-
-    const t = `${d.getHours().toString().padStart(2, "0")}:${d
-      .getMinutes()
-      .toString()
-      .padStart(2, "0")}`;
-
-    if (picker === "start") setForm((p) => ({ ...p, start: t }));
-    if (picker === "end") setForm((p) => ({ ...p, end: t }));
-    if (picker === "sleepStart") setSleep((s) => ({ ...s, start: t }));
-    if (picker === "sleepEnd") setSleep((s) => ({ ...s, end: t }));
-
-    setPicker(null);
+    await AsyncStorage.setItem("taskHistory", JSON.stringify(filtered));
   };
 
   /* ================= UI ================= */
@@ -246,20 +154,20 @@ export default function ScheduleScreen() {
       {/* HEADER */}
       <View style={styles.headerRow}>
         <Text style={styles.header}>Today</Text>
+
         <View style={styles.dateBox}>
-          <Text style={styles.dateDay}>{todayName}</Text>
+          <Text style={styles.dateDay}>{today}</Text>
           <Text style={styles.dateText}>{now.toDateString()}</Text>
           <Text style={styles.timeText}>{now.toLocaleTimeString()}</Text>
         </View>
       </View>
 
-      {/* BADGE NOTE */}
       <Text style={styles.note}>
-        Current = ongoing • Next = upcoming • Previous = completed • Done =
+        Current = ongoing • Next = upcoming • Previous = finished • Done =
         marked
       </Text>
 
-      {/* SLEEP CARD */}
+      {/* SLEEP */}
       <TouchableOpacity
         style={styles.sleepCard}
         onPress={() => setSleepModal(true)}
@@ -268,11 +176,11 @@ export default function ScheduleScreen() {
         <Text>
           {sleep.start && sleep.end
             ? `${format12(sleep.start)} → ${format12(sleep.end)}`
-            : "Tap to set"}
+            : "Not set"}
         </Text>
       </TouchableOpacity>
 
-      {/* TODAY TASKS */}
+      {/* TASKS */}
       <ScrollView>
         {todayTasks.length === 0 ? (
           <Text style={styles.empty}>No tasks for today</Text>
@@ -288,150 +196,37 @@ export default function ScheduleScreen() {
                 {format12(t.start)} → {format12(t.end)}
               </Text>
 
-              <View style={styles.actions}>
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() => {
-                    setForm(t);
-                    setTaskModal(true);
-                  }}
-                >
-                  <Text>Edit</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={() =>
-                    saveTasks(
-                      tasks.map((x) =>
-                        x.id === t.id ? { ...x, done: !x.done } : x
-                      )
-                    )
-                  }
-                >
-                  <Text>{t.done ? "Undo" : "Done"}</Text>
-                </TouchableOpacity>
-              </View>
+              <TouchableOpacity
+                style={styles.doneBtn}
+                onPress={() => toggleDone(t)}
+              >
+                <Text>{t.done ? "Undo" : "Mark Done"}</Text>
+              </TouchableOpacity>
             </View>
           ))
         )}
       </ScrollView>
 
-      {/* ADD BUTTON */}
-      <TouchableOpacity style={styles.fab} onPress={() => setTaskModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-
-      {/* TASK MODAL */}
-      <Modal visible={taskModal} transparent animationType="slide">
-        <View style={styles.modal}>
-          <View style={styles.box}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Task</Text>
-              <TouchableOpacity onPress={closeTaskModal}>
-                <Text style={styles.close}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.input}
-              placeholder="Task name"
-              value={form.title}
-              onChangeText={(t) => setForm((p) => ({ ...p, title: t }))}
-            />
-
-            <TouchableOpacity
-              style={styles.input}
-              onPress={() => setPicker("start")}
-            >
-              <Text>{form.start || "Start Time"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.input}
-              onPress={() => setPicker("end")}
-            >
-              <Text>{form.end || "End Time"}</Text>
-            </TouchableOpacity>
-
-            <View style={styles.daysRow}>
-              {DAYS.map((d) => (
-                <TouchableOpacity
-                  key={d}
-                  style={[
-                    styles.day,
-                    form.days.includes(d) && styles.dayActive,
-                  ]}
-                  onPress={() =>
-                    setForm((p) => ({
-                      ...p,
-                      days: p.days.includes(d)
-                        ? p.days.filter((x) => x !== d)
-                        : [...p.days, d],
-                    }))
-                  }
-                >
-                  <Text>{d}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <TouchableOpacity style={styles.saveBtn} onPress={saveTask}>
-              <Text style={styles.saveText}>
-                {form.id ? "Update Task" : "Add Task"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* SLEEP MODAL */}
+      {/* SLEEP VIEW */}
       <Modal visible={sleepModal} transparent animationType="slide">
         <View style={styles.modal}>
           <View style={styles.box}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Sleep</Text>
-              <TouchableOpacity onPress={() => setSleepModal(false)}>
-                <Text style={styles.close}>✕</Text>
-              </TouchableOpacity>
-            </View>
+            <Text style={styles.modalTitle}>Sleep Time</Text>
+            <Text>
+              {sleep.start && sleep.end
+                ? `${format12(sleep.start)} → ${format12(sleep.end)}`
+                : "Set from Timetable"}
+            </Text>
 
             <TouchableOpacity
-              style={styles.input}
-              onPress={() => setPicker("sleepStart")}
+              style={styles.closeBtn}
+              onPress={() => setSleepModal(false)}
             >
-              <Text>{sleep.start || "Sleep Start"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.input}
-              onPress={() => setPicker("sleepEnd")}
-            >
-              <Text>{sleep.end || "Wake Time"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.saveBtn}
-              onPress={async () => {
-                await AsyncStorage.setItem("sleep", JSON.stringify(sleep));
-                setSleepModal(false);
-              }}
-            >
-              <Text style={styles.saveText}>Save</Text>
+              <Text>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
-
-      {/* ANDROID TIME PICKER */}
-      {picker && (
-        <DateTimePicker
-          value={new Date()}
-          mode="time"
-          display="default"
-          onChange={onTimeChange}
-        />
-      )}
     </View>
   );
 }
@@ -444,7 +239,6 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-start",
     marginTop: 24,
   },
   header: { fontSize: 22, fontWeight: "700" },
@@ -454,11 +248,7 @@ const styles = StyleSheet.create({
   dateText: { fontSize: 12 },
   timeText: { fontSize: 12, color: "#4f46e5" },
 
-  note: {
-    fontSize: 12,
-    color: "#374151",
-    marginVertical: 8,
-  },
+  note: { fontSize: 12, color: "#374151", marginVertical: 8 },
 
   sleepCard: {
     backgroundColor: "#fef3c7",
@@ -482,7 +272,6 @@ const styles = StyleSheet.create({
     right: 10,
     backgroundColor: "#6366f1",
     paddingHorizontal: 8,
-    paddingVertical: 2,
     borderRadius: 999,
   },
   badgeText: { color: "white", fontSize: 10 },
@@ -490,30 +279,13 @@ const styles = StyleSheet.create({
   taskTitle: { fontWeight: "700", fontSize: 16 },
   time: { color: "#6b7280" },
 
-  actions: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  doneBtn: {
     marginTop: 10,
-  },
-  actionBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    padding: 8,
     borderRadius: 8,
     backgroundColor: "#e5e7eb",
-  },
-
-  fab: {
-    position: "absolute",
-    right: 24,
-    bottom: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#6366f1",
     alignItems: "center",
-    justifyContent: "center",
   },
-  fabText: { color: "white", fontSize: 30 },
 
   modal: {
     flex: 1,
@@ -526,37 +298,12 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 16,
   },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  modalTitle: { fontSize: 18, fontWeight: "700" },
-  close: { fontSize: 18 },
-
-  input: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 8,
+  modalTitle: { fontSize: 18, fontWeight: "700", marginBottom: 10 },
+  closeBtn: {
+    marginTop: 16,
     padding: 12,
-    marginBottom: 10,
-  },
-
-  daysRow: { flexDirection: "row", flexWrap: "wrap" },
-  day: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    padding: 6,
-    margin: 4,
-    borderRadius: 6,
-  },
-  dayActive: { backgroundColor: "#c7d2fe" },
-
-  saveBtn: {
-    backgroundColor: "#6366f1",
-    padding: 14,
+    backgroundColor: "#e5e7eb",
     borderRadius: 8,
-    marginTop: 10,
+    alignItems: "center",
   },
-  saveText: { color: "white", textAlign: "center" },
 });

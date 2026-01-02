@@ -1,161 +1,222 @@
-// ============================================
-// FILE 2: app/(tabs)/explore.tsx
-// Replace the existing explore.tsx (This will be Dashboard)
-// ============================================
+"use client";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useState } from "react";
+import { useFocusEffect } from "expo-router";
+import React, { useCallback, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+
+/* ================= TYPES ================= */
+
+interface Task {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  days: string[];
+}
+
+interface HistoryItem {
+  taskId: string;
+  date: string; // ISO
+  completed: boolean;
+}
 
 interface Stats {
   totalTasks: number;
+  todayTasks: number;
   completedToday: number;
   completionRate: number;
   streak: number;
 }
 
+/* ================= CONSTANTS ================= */
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/* ================= COMPONENT ================= */
+
 export default function DashboardScreen() {
   const [stats, setStats] = useState<Stats>({
     totalTasks: 0,
+    todayTasks: 0,
     completedToday: 0,
     completionRate: 0,
     streak: 0,
   });
 
-  useEffect(() => {
-    loadStats();
-    const interval = setInterval(loadStats, 30000); // Refresh every 30s
-    return () => clearInterval(interval);
-  }, []);
+  /* ================= LOAD ON TAB FOCUS ================= */
+
+  useFocusEffect(
+    useCallback(() => {
+      loadStats();
+    }, [])
+  );
+
+  /* ================= LOGIC ================= */
 
   const loadStats = async () => {
     try {
-      const history = (await AsyncStorage.getItem("taskHistory")) || "[]";
-      const tasks = (await AsyncStorage.getItem("tasks")) || "[]";
+      const tasksRaw = await AsyncStorage.getItem("tasks");
+      const historyRaw = await AsyncStorage.getItem("taskHistory");
 
-      const historyData = JSON.parse(history);
-      const tasksData = JSON.parse(tasks);
+      const tasks: Task[] = tasksRaw ? JSON.parse(tasksRaw) : [];
+      const history: HistoryItem[] = historyRaw ? JSON.parse(historyRaw) : [];
 
-      const today = new Date().toDateString();
-      const todayHistory = historyData.filter(
-        (h: any) => new Date(h.date).toDateString() === today
+      const today = new Date();
+      const todayStr = today.toDateString();
+      const todayName = DAYS[today.getDay()];
+
+      const todayTasks = tasks.filter((t) => t.days.includes(todayName));
+
+      const todayHistory = history.filter(
+        (h) => new Date(h.date).toDateString() === todayStr && h.completed
       );
 
-      const completedToday = todayHistory.filter(
-        (h: any) => h.completed
-      ).length;
-      const totalToday = todayHistory.length;
-      const completionRate =
-        totalToday > 0 ? (completedToday / totalToday) * 100 : 0;
+      const completedToday = todayHistory.length;
+      const totalToday = todayTasks.length;
 
-      // Calculate streak
+      const completionRate =
+        totalToday > 0 ? Math.round((completedToday / totalToday) * 100) : 0;
+
+      /* ================= STREAK ================= */
+
       let streak = 0;
-      let currentDate = new Date();
+      let checkDate = new Date();
 
       for (let i = 0; i < 365; i++) {
-        const dateStr = currentDate.toDateString();
-        const dayTasks = historyData.filter(
-          (h: any) => new Date(h.date).toDateString() === dateStr
-        );
+        const dateStr = checkDate.toDateString();
+        const dayName = DAYS[checkDate.getDay()];
+
+        const dayTasks = tasks.filter((t) => t.days.includes(dayName));
 
         if (dayTasks.length === 0) break;
 
-        const allCompleted = dayTasks.every((h: any) => h.completed);
-        if (!allCompleted) break;
+        const completedForDay = history.filter(
+          (h) => new Date(h.date).toDateString() === dateStr && h.completed
+        );
+
+        if (completedForDay.length < dayTasks.length) break;
 
         streak++;
-        currentDate.setDate(currentDate.getDate() - 1);
+        checkDate.setDate(checkDate.getDate() - 1);
       }
 
       setStats({
-        totalTasks: tasksData.length,
+        totalTasks: tasks.length,
+        todayTasks: totalToday,
         completedToday,
-        completionRate: Math.round(completionRate),
+        completionRate,
         streak,
       });
-    } catch (error) {
-      console.error("Stats error:", error);
+    } catch (err) {
+      console.error("Dashboard error:", err);
     }
   };
 
+  /* ================= UI ================= */
+
   return (
     <ScrollView style={styles.container}>
+      {/* HEADER */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Dashboard</Text>
-        <Text style={styles.headerSubtitle}>Track your productivity</Text>
+        <Text style={styles.headerSubtitle}>
+          Track your productivity & habits
+        </Text>
       </View>
 
+      {/* STATS */}
       <View style={styles.statsGrid}>
-        <View style={[styles.statCard, styles.statCardPurple]}>
-          <Text style={styles.statNumber}>{stats.totalTasks}</Text>
-          <Text style={styles.statLabel}>Total Tasks</Text>
-        </View>
-
-        <View style={[styles.statCard, styles.statCardGreen]}>
-          <Text style={styles.statNumber}>{stats.completedToday}</Text>
-          <Text style={styles.statLabel}>Completed Today</Text>
-        </View>
-
-        <View style={[styles.statCard, styles.statCardBlue]}>
-          <Text style={styles.statNumber}>{stats.completionRate}%</Text>
-          <Text style={styles.statLabel}>Completion Rate</Text>
-        </View>
-
-        <View style={[styles.statCard, styles.statCardOrange]}>
-          <Text style={styles.statNumber}>{stats.streak} 🔥</Text>
-          <Text style={styles.statLabel}>Day Streak</Text>
-        </View>
+        <StatCard label="Total Tasks" value={stats.totalTasks} bg="#ede9fe" />
+        <StatCard label="Today's Tasks" value={stats.todayTasks} bg="#e0e7ff" />
+        <StatCard
+          label="Completed Today"
+          value={stats.completedToday}
+          bg="#dcfce7"
+        />
+        <StatCard
+          label="Completion"
+          value={`${stats.completionRate}%`}
+          bg="#dbeafe"
+        />
       </View>
 
-      <View style={styles.motivationCard}>
-        <Text style={styles.motivationTitle}>
-          {stats.streak > 5
-            ? "🎉 Amazing Consistency!"
-            : stats.streak > 2
-            ? "💪 Keep Going!"
-            : "🌟 Start Your Journey!"}
+      {/* STREAK */}
+      <View style={[styles.statWide, styles.streak]}>
+        <Text style={styles.streakNumber}>{stats.streak} 🔥</Text>
+        <Text style={styles.streakText}>Day Streak</Text>
+      </View>
+
+      {/* MOTIVATION */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>
+          {stats.streak >= 7
+            ? "🔥 You’re Unstoppable!"
+            : stats.streak >= 3
+            ? "💪 Great Momentum!"
+            : "🌱 Start Small, Win Big"}
         </Text>
-        <Text style={styles.motivationText}>
-          {stats.streak > 5
-            ? "You're on fire! Keep up the great work!"
-            : stats.streak > 2
-            ? "You're building great habits!"
-            : "Complete today's tasks to start your streak!"}
+        <Text style={styles.cardText}>
+          {stats.streak >= 7
+            ? "Your consistency is amazing. Keep pushing!"
+            : stats.streak >= 3
+            ? "You're building a strong habit. Stay focused!"
+            : "Complete today's tasks to start your streak."}
         </Text>
       </View>
 
-      <View style={styles.tipsCard}>
-        <Text style={styles.tipsTitle}>💡 Pro Tips</Text>
-        <Text style={styles.tipItem}>• Set realistic daily goals</Text>
-        <Text style={styles.tipItem}>• Use tags to organize your tasks</Text>
-        <Text style={styles.tipItem}>• Enable alarms for important tasks</Text>
-        <Text style={styles.tipItem}>• Review your progress weekly</Text>
+      {/* TIPS */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>💡 Pro Tips</Text>
+        <Text style={styles.tip}>• Plan tasks around your sleep time</Text>
+        <Text style={styles.tip}>• Focus on completing today’s tasks</Text>
+        <Text style={styles.tip}>• Keep streaks alive with consistency</Text>
+        <Text style={styles.tip}>• Review weekly progress</Text>
       </View>
     </ScrollView>
   );
 }
 
+/* ================= REUSABLE CARD ================= */
+
+function StatCard({
+  label,
+  value,
+  bg,
+}: {
+  label: string;
+  value: string | number;
+  bg: string;
+}) {
+  return (
+    <View style={[styles.statCard, { backgroundColor: bg }]}>
+      <Text style={styles.statNumber}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+/* ================= STYLES ================= */
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f9fafb",
-  },
+  container: { flex: 1, backgroundColor: "#f9fafb" },
+
   header: {
     backgroundColor: "#6366f1",
-    padding: 20,
     paddingTop: 60,
-    paddingBottom: 30,
+    paddingBottom: 28,
+    paddingHorizontal: 20,
   },
   headerTitle: {
     fontSize: 28,
-    fontWeight: "bold",
+    fontWeight: "800",
     color: "white",
   },
   headerSubtitle: {
-    fontSize: 14,
     color: "#e0e7ff",
-    marginTop: 4,
+    marginTop: 6,
   },
+
   statsGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -164,75 +225,59 @@ const styles = StyleSheet.create({
   },
   statCard: {
     width: "48%",
-    padding: 20,
+    padding: 18,
     borderRadius: 16,
     marginBottom: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    elevation: 2,
   },
-  statCardPurple: { backgroundColor: "#ede9fe" },
-  statCardGreen: { backgroundColor: "#dcfce7" },
-  statCardBlue: { backgroundColor: "#dbeafe" },
-  statCardOrange: { backgroundColor: "#fed7aa" },
   statNumber: {
-    fontSize: 32,
-    fontWeight: "bold",
-    color: "#111827",
+    fontSize: 28,
+    fontWeight: "700",
     marginBottom: 4,
   },
   statLabel: {
-    fontSize: 14,
     color: "#6b7280",
     fontWeight: "500",
   },
-  motivationCard: {
-    margin: 16,
-    marginTop: 8,
-    padding: 24,
-    backgroundColor: "white",
-    borderRadius: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  motivationTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#111827",
-    marginBottom: 8,
-  },
-  motivationText: {
-    fontSize: 16,
-    color: "#6b7280",
-    lineHeight: 24,
-  },
-  tipsCard: {
-    margin: 16,
-    marginTop: 0,
-    padding: 20,
-    backgroundColor: "white",
-    borderRadius: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  tipsTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#111827",
+
+  statWide: {
+    marginHorizontal: 16,
     marginBottom: 12,
+    padding: 20,
+    borderRadius: 16,
+    alignItems: "center",
   },
-  tipItem: {
-    fontSize: 14,
-    color: "#6b7280",
+  streak: {
+    backgroundColor: "#fed7aa",
+  },
+  streakNumber: {
+    fontSize: 32,
+    fontWeight: "800",
+  },
+  streakText: {
+    marginTop: 4,
+    fontWeight: "600",
+  },
+
+  card: {
+    backgroundColor: "white",
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 20,
+    borderRadius: 16,
+    elevation: 2,
+  },
+  cardTitle: {
+    fontSize: 18,
+    fontWeight: "700",
     marginBottom: 8,
-    lineHeight: 20,
+  },
+  cardText: {
+    color: "#6b7280",
+    lineHeight: 22,
+  },
+  tip: {
+    color: "#6b7280",
+    marginBottom: 6,
   },
 });
