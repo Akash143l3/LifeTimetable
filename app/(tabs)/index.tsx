@@ -4,7 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Modal,
@@ -70,6 +70,7 @@ const format12 = (t?: string) => {
 export default function ScheduleScreen() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [sleep, setSleep] = useState<SleepTime>({ start: "", end: "" });
+  const [now, setNow] = useState(new Date());
 
   const [taskModal, setTaskModal] = useState(false);
   const [sleepModal, setSleepModal] = useState(false);
@@ -96,6 +97,9 @@ export default function ScheduleScreen() {
       if (s) setSleep(JSON.parse(s));
       else setSleepModal(true);
     })();
+
+    const i = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(i);
   }, []);
 
   const saveTasks = async (list: Task[]) => {
@@ -103,9 +107,18 @@ export default function ScheduleScreen() {
     await AsyncStorage.setItem("tasks", JSON.stringify(list));
   };
 
+  /* ================= TODAY FILTER ================= */
+
+  const todayName = DAYS[now.getDay()];
+
+  const todayTasks = useMemo(
+    () => tasks.filter((t) => t.days.includes(todayName)),
+    [tasks, todayName]
+  );
+
   /* ================= STATUS BADGE ================= */
 
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
 
   const statusOf = (t: Task) => {
     if (t.done) return "Done";
@@ -202,13 +215,7 @@ export default function ScheduleScreen() {
 
   const closeTaskModal = () => {
     setTaskModal(false);
-    setForm({
-      id: "",
-      title: "",
-      start: "",
-      end: "",
-      days: [],
-    });
+    setForm({ id: "", title: "", start: "", end: "", days: [] });
   };
 
   /* ================= TIME PICKER ================= */
@@ -236,7 +243,21 @@ export default function ScheduleScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>Daily Schedule</Text>
+      {/* HEADER */}
+      <View style={styles.headerRow}>
+        <Text style={styles.header}>Today</Text>
+        <View style={styles.dateBox}>
+          <Text style={styles.dateDay}>{todayName}</Text>
+          <Text style={styles.dateText}>{now.toDateString()}</Text>
+          <Text style={styles.timeText}>{now.toLocaleTimeString()}</Text>
+        </View>
+      </View>
+
+      {/* BADGE NOTE */}
+      <Text style={styles.note}>
+        Current = ongoing • Next = upcoming • Previous = completed • Done =
+        marked
+      </Text>
 
       {/* SLEEP CARD */}
       <TouchableOpacity
@@ -251,46 +272,49 @@ export default function ScheduleScreen() {
         </Text>
       </TouchableOpacity>
 
-      {/* TASK LIST */}
+      {/* TODAY TASKS */}
       <ScrollView>
-        {tasks.map((t) => (
-          <View key={t.id} style={styles.task}>
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{statusOf(t)}</Text>
-            </View>
+        {todayTasks.length === 0 ? (
+          <Text style={styles.empty}>No tasks for today</Text>
+        ) : (
+          todayTasks.map((t) => (
+            <View key={t.id} style={styles.task}>
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{statusOf(t)}</Text>
+              </View>
 
-            <Text style={styles.taskTitle}>{t.title}</Text>
-            <Text style={styles.time}>
-              {format12(t.start)} → {format12(t.end)}
-            </Text>
-            <Text style={styles.daysText}>{t.days.join(", ")}</Text>
+              <Text style={styles.taskTitle}>{t.title}</Text>
+              <Text style={styles.time}>
+                {format12(t.start)} → {format12(t.end)}
+              </Text>
 
-            <View style={styles.actions}>
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() => {
-                  setForm(t);
-                  setTaskModal(true);
-                }}
-              >
-                <Text>Edit</Text>
-              </TouchableOpacity>
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => {
+                    setForm(t);
+                    setTaskModal(true);
+                  }}
+                >
+                  <Text>Edit</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() =>
-                  saveTasks(
-                    tasks.map((x) =>
-                      x.id === t.id ? { ...x, done: !x.done } : x
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() =>
+                    saveTasks(
+                      tasks.map((x) =>
+                        x.id === t.id ? { ...x, done: !x.done } : x
+                      )
                     )
-                  )
-                }
-              >
-                <Text>{t.done ? "Undo" : "Done"}</Text>
-              </TouchableOpacity>
+                  }
+                >
+                  <Text>{t.done ? "Undo" : "Done"}</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-        ))}
+          ))
+        )}
       </ScrollView>
 
       {/* ADD BUTTON */}
@@ -416,15 +440,35 @@ export default function ScheduleScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 16, backgroundColor: "#f9fafb" },
-  header: { fontSize: 22, fontWeight: "700", marginTop: 32 },
+
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginTop: 24,
+  },
+  header: { fontSize: 22, fontWeight: "700" },
+
+  dateBox: { alignItems: "flex-end" },
+  dateDay: { fontWeight: "700" },
+  dateText: { fontSize: 12 },
+  timeText: { fontSize: 12, color: "#4f46e5" },
+
+  note: {
+    fontSize: 12,
+    color: "#374151",
+    marginVertical: 8,
+  },
 
   sleepCard: {
     backgroundColor: "#fef3c7",
     padding: 14,
     borderRadius: 12,
-    marginVertical: 16,
+    marginVertical: 12,
   },
   sleepTitle: { fontWeight: "600" },
+
+  empty: { textAlign: "center", color: "#6b7280", marginTop: 40 },
 
   task: {
     backgroundColor: "white",
@@ -445,7 +489,6 @@ const styles = StyleSheet.create({
 
   taskTitle: { fontWeight: "700", fontSize: 16 },
   time: { color: "#6b7280" },
-  daysText: { fontSize: 12, color: "#374151" },
 
   actions: {
     flexDirection: "row",
